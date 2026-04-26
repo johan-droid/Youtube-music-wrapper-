@@ -1,34 +1,41 @@
 # YouTube Music Wrapper
 
-A lightweight microservice that extracts audio URLs from YouTube Music/YouTube using the **Invidious API**.
+A lightweight microservice that extracts audio URLs from YouTube Music/YouTube using **yt-dlp with cookies**.
 
-**Purpose:** Bypass YouTube bot detection by using Invidious instances (YouTube frontends) instead of direct yt-dlp.
+**Purpose:** Bypass YouTube bot detection by using exported browser cookies to authenticate requests.
 
 ## How It Works
 
-Instead of using yt-dlp (which gets blocked by YouTube), this wrapper uses public Invidious instances:
-- Invidious is a privacy-friendly YouTube frontend
-- Provides JSON API for search and video info
-- Returns direct audio stream URLs
-- Bypasses YouTube's bot detection entirely
+This wrapper uses yt-dlp with YouTube cookies exported from your browser:
+- Cookies authenticate the requests as a real user
+- Bypasses YouTube's bot detection
+- Works with Indian music and geo-restricted content
+- Requires periodic cookie refresh (when they expire)
 
-## Deploy to Render
+## Setup (IMPORTANT)
 
-### Option 1: Deploy from GitHub (Recommended)
+### Step 1: Export YouTube Cookies
 
-1. Push this code to a GitHub repository
+1. Install "Get cookies.txt LOCALLY" Chrome extension
+2. Go to https://www.youtube.com (make sure you're logged in)
+3. Click the extension → "Export" → Save as `cookies.txt`
+4. Place `cookies.txt` in this directory
+
+### Step 2: Deploy to Render
+
+1. Push this code to GitHub (including `cookies.txt`)
 2. Go to [Render Dashboard](https://dashboard.render.com/)
 3. Click "New Web Service"
 4. Connect your GitHub repository
 5. Configure:
    - **Name:** `youtube-music-wrapper`
    - **Environment:** `Node`
-   - **Build Command:** `npm install`
+   - **Build Command:** `npm install && pip install -r requirements.txt`
    - **Start Command:** `npm start`
    - **Plan:** Free
 6. Click "Create Web Service"
 
-### Option 2: Deploy via Render YAML
+## Deploy via Render YAML
 
 1. Push this code to GitHub with `render.yaml`
 2. Click "New" → "Blueprint" in Render dashboard
@@ -142,32 +149,29 @@ curl "http://localhost:3000/track/dQw4w9WgXcQ"
 
 ## Troubleshooting
 
-**Invidious instance down:**
-- The wrapper automatically rotates through multiple Invidious instances
-- If all fail, the service will return 500 - try again later
+**"Sign in to confirm you're not a bot" error:**
+- Cookies have expired - re-export from browser
+- YouTube changed their authentication - export fresh cookies
 
 **Video unavailable:**
-- Some videos are geo-blocked or age-restricted on Invidious too
+- Some videos are geo-blocked or age-restricted even with cookies
 - Try different search queries
 
-**No audio URL in response:**
-- Some Invidious instances don't provide adaptiveFormats
-- The wrapper will return `null` for stream_url in these cases
+**yt-dlp not found:**
+- Make sure `pip install -r requirements.txt` runs during build
+- Or install yt-dlp manually: `pip install yt-dlp`
 
-## How Invidious Works
+## How Cookies Work
 
-This service uses the Invidious API:
+This service uses your YouTube cookies to authenticate:
 ```
-Your Bot → This Wrapper → Invidious Instance → YouTube
-                              (bypasses blocks)
+Your Bot → This Wrapper → yt-dlp (with your cookies) → YouTube
+                              (appears as logged-in user)
 ```
 
-Multiple Invidious instances are used for redundancy:
-- iv.datura.network
-- iv.nboeck.de
-- iv.melmac.space
-- y.com.sb
-- yt.artemislena.eu
+**Cookie Expiration:**
+- YouTube cookies expire after ~1-2 months
+- When you see bot errors, re-export cookies.txt
 
 ## License
 

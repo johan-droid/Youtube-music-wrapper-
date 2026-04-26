@@ -1,13 +1,17 @@
 /**
  * YouTube Music Wrapper Microservice
- * Uses Invidious API to bypass YouTube bot detection
+ * Uses yt-dlp with cookies to bypass YouTube bot detection
  * Deploy to Render to bypass Heroku IP blocks
  */
 
 const express = require('express');
 const cors = require('cors');
-const https = require('https');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const path = require('path');
+const fs = require('fs');
 
+const execAsync = promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -15,51 +19,15 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Invidious instances - these are YouTube frontends that don't block
-const INVIDIOUS_INSTANCES = [
-  'https://iv.datura.network',
-  'https://iv.nboeck.de',
-  'https://iv.melmac.space',
-  'https://iv.nboeck.de',
-  'https://y.com.sb',
-  'https://yt.artemislena.eu'
-];
+// Check for cookies file
+const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+const hasCookies = fs.existsSync(COOKIES_PATH);
+console.log(`[INIT] Cookies file ${hasCookies ? 'found' : 'NOT found'} at ${COOKIES_PATH}`);
 
-let currentInstanceIndex = 0;
-
-function getInvidiousUrl(path) {
-  const instance = INVIDIOUS_INSTANCES[currentInstanceIndex];
-  currentInstanceIndex = (currentInstanceIndex + 1) % INVIDIOUS_INSTANCES.length;
-  return `${instance}${path}`;
-}
-
-function fetchJson(url) {
-  return new Promise((resolve, reject) => {
-    const options = {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9'
-      },
-      timeout: 15000
-    };
-
-    https.get(url, options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          if (res.statusCode >= 400) {
-            reject(new Error(`HTTP ${res.statusCode}`));
-          } else {
-            resolve(JSON.parse(data));
-          }
-        } catch (e) {
-          reject(e);
-        }
-      });
-    }).on('error', reject).on('timeout', () => reject(new Error('Timeout')));
-  });
+// Build yt-dlp command with cookies
+function buildYtdlpCommand(args) {
+  const cookiesArg = hasCookies ? `--cookies "${COOKIES_PATH}"` : '';
+  return `yt-dlp ${cookiesArg} ${args}`;
 }
 
 /**
@@ -74,7 +42,7 @@ app.get('/', (req, res) => {
 });
 
 /**
- * Search YouTube Music via Invidious API
+ * Search YouTube Music using yt-dlp with cookies
  * GET /search?q=<query>&limit=<n>
  */
 app.get('/search', async (req, res) => {
@@ -89,46 +57,39 @@ app.get('/search', async (req, res) => {
     console.log(`[SEARCH] Query: "${query}", Limit: ${limit}`);
 
     try {
-      // Use Invidious API to search (bypasses YouTube bot detection)
-      const searchUrl = getInvidiousUrl(`/api/v1/search?q=${encodeURIComponent(query)}&type=video`);
-      const data = await fetchJson(searchUrl);
+      // Use yt-dlp with cookies to search
+      const searchQuery = `ytsearch${limit}:${query}`;
+      const cmd = buildYtdlpCommand(`-j --flat-playlist "${searchQuery}"`);
 
-      const results = [];
-      const entries = Array.isArray(data) ? data : [];
+      const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
 
-      for (let i = 0; i < Math.min(entries.length, limit); i++) {
-        const entry = entries[i];
-        if (!entry.videoId || !entry.title) continue;
-
-        // Get best audio stream URL from adaptiveFormats
-        let streamUrl = null;
-        if (entry.adaptiveFormats && entry.adaptiveFormats.length > 0) {
-          const audioFormats = entry.adaptiveFormats.filter(f =>
-            f.type && f.type.startsWith('audio/')
-          );
-          if (audioFormats.length > 0) {
-            // Sort by bitrate (highest first)
-            audioFormats.sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
-            streamUrl = audioFormats[0].url;
-          }
-        }
-
-        results.push({
-          id: entry.videoId,
-          title: entry.title,
-          artist: entry.author || 'Unknown Artist',
-          duration: entry.lengthSeconds || 0,
-          thumbnail: entry.videoThumbnails ?
-            entry.videoThumbnails.find(t => t.quality === 'medium')?.url ||
-            entry.videoThumbnails[0]?.url ||
-            `https://i.ytimg.com/vi/${entry.videoId}/mqdefault.jpg` :
-            `https://i.ytimg.com/vi/${entry.videoId}/mqdefault.jpg`,
-          url: `https://www.youtube.com/watch?v=${entry.videoId}`,
-          stream_url: streamUrl  // Pre-extracted audio URL
-        });
+      if (stderr) {
+        console.error('[SEARCH] stderr:', stderr);
       }
 
-      console.log(`[SEARCH] Found ${results.length} results via Invidious`);
+      // Parse JSON lines
+      const lines = stdout.trim().split('\n').filter(line => line.trim());
+      const results = [];
+
+      for (const line of lines) {
+        try {
+          const data = JSON.parse(line);
+          if (data.id && data.title) {
+            results.push({
+              id: data.id,
+              title: data.title,
+              artist: data.uploader || data.channel || 'Unknown Artist',
+              duration: data.duration || 0,
+              thumbnail: data.thumbnail || `https://i.ytimg.com/vi/${data.id}/mqdefault.jpg`,
+              url: `https://www.youtube.com/watch?v=${data.id}`
+            });
+          }
+        } catch (e) {
+          console.error('[SEARCH] Failed to parse line:', e.message);
+        }
+      }
+
+      console.log(`[SEARCH] Found ${results.length} results via yt-dlp`);
 
       res.json({
         data: results,
@@ -136,11 +97,11 @@ app.get('/search', async (req, res) => {
         query: query
       });
 
-    } catch (apiError) {
-      console.error('[SEARCH] Invidious API error:', apiError.message);
+    } catch (execError) {
+      console.error('[SEARCH] yt-dlp error:', execError.message);
       res.status(500).json({
         error: 'Search failed',
-        message: apiError.message,
+        message: execError.message,
         data: [],
         total: 0
       });
@@ -158,7 +119,7 @@ app.get('/search', async (req, res) => {
 });
 
 /**
- * Get track stream URL via Invidious API
+ * Get track stream URL using yt-dlp with cookies
  * GET /track/:id
  */
 app.get('/track/:id', async (req, res) => {
@@ -171,35 +132,42 @@ app.get('/track/:id', async (req, res) => {
 
     console.log(`[TRACK] ID: ${videoId}`);
 
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
     try {
-      // Use Invidious API to get video info (bypasses YouTube bot detection)
-      const infoUrl = getInvidiousUrl(`/api/v1/videos/${videoId}`);
-      const result = await fetchJson(infoUrl);
+      // Get best audio format URL using yt-dlp with cookies
+      // -g: get URL, -f: format selector (best audio only)
+      const cmd = buildYtdlpCommand(`-g -f "bestaudio[ext=m4a]/bestaudio/best" "${videoUrl}"`);
 
-      const title = result.title || 'Unknown';
-      const artist = result.author || 'Unknown Artist';
-      const duration = result.lengthSeconds || 0;
-      const thumbnail = result.videoThumbnails ?
-        result.videoThumbnails.find(t => t.quality === 'medium')?.url ||
-        result.videoThumbnails[0]?.url ||
-        `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` :
-        `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+      const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
 
-      // Get the best audio URL
-      let streamUrl = null;
-      if (result.adaptiveFormats && result.adaptiveFormats.length > 0) {
-        const audioFormats = result.adaptiveFormats.filter(f =>
-          f.type && f.type.startsWith('audio/')
-        );
-        if (audioFormats.length > 0) {
-          // Sort by bitrate (highest first)
-          audioFormats.sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
-          streamUrl = audioFormats[0].url;
-        }
+      if (stderr) {
+        console.error('[TRACK] stderr:', stderr);
       }
+
+      const streamUrl = stdout.trim();
 
       if (!streamUrl) {
         return res.status(404).json({ error: 'Could not extract stream URL' });
+      }
+
+      // Get video info for metadata
+      const infoCmd = buildYtdlpCommand(`-j --skip-download "${videoUrl}"`);
+      let title = 'Unknown';
+      let artist = 'Unknown Artist';
+      let duration = 0;
+      let thumbnail = '';
+
+      try {
+        const { stdout: infoStdout } = await execAsync(infoCmd, { timeout: 15000 });
+        const info = JSON.parse(infoStdout);
+        title = info.title || 'Unknown';
+        artist = info.uploader || info.channel || 'Unknown Artist';
+        duration = info.duration || 0;
+        thumbnail = info.thumbnail || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+      } catch (e) {
+        console.error('[TRACK] Failed to get metadata:', e.message);
+        thumbnail = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
       }
 
       console.log(`[TRACK] Success: ${title}`);
@@ -210,16 +178,25 @@ app.get('/track/:id', async (req, res) => {
         artist: { name: artist },
         duration: duration,
         stream_url: streamUrl,
-        url: `https://www.youtube.com/watch?v=${videoId}`,
+        url: videoUrl,
         thumbnail: thumbnail,
         source: 'youtube'
       });
 
-    } catch (apiError) {
-      console.error('[TRACK] Invidious API error:', apiError.message);
+    } catch (execError) {
+      console.error('[TRACK] yt-dlp error:', execError.message);
+
+      // Check for specific errors
+      if (execError.message.includes('Video unavailable')) {
+        return res.status(404).json({ error: 'Video unavailable or private' });
+      }
+      if (execError.message.includes('Sign in')) {
+        return res.status(403).json({ error: 'Age restricted - requires sign in' });
+      }
+
       res.status(500).json({
         error: 'Extraction failed',
-        message: apiError.message
+        message: execError.message
       });
     }
 
@@ -233,7 +210,7 @@ app.get('/track/:id', async (req, res) => {
 });
 
 /**
- * Extract from full URL via Invidious API
+ * Extract from full URL using yt-dlp with cookies
  * GET /extract?url=<youtube_url>
  */
 app.get('/extract', async (req, res) => {
@@ -246,52 +223,37 @@ app.get('/extract', async (req, res) => {
 
     console.log(`[EXTRACT] URL: ${url}`);
 
-    // Extract video ID from URL
-    const match = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-    if (!match) {
-      return res.status(400).json({ error: 'Could not extract video ID from URL' });
-    }
-    const videoId = match[1];
-
     try {
-      // Use Invidious API to get video info
-      const infoUrl = getInvidiousUrl(`/api/v1/videos/${videoId}`);
-      const result = await fetchJson(infoUrl);
-
-      // Get the best audio URL
-      let streamUrl = null;
-      if (result.adaptiveFormats && result.adaptiveFormats.length > 0) {
-        const audioFormats = result.adaptiveFormats.filter(f =>
-          f.type && f.type.startsWith('audio/')
-        );
-        if (audioFormats.length > 0) {
-          audioFormats.sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
-          streamUrl = audioFormats[0].url;
-        }
-      }
+      // Get stream URL using yt-dlp with cookies
+      const cmd = buildYtdlpCommand(`-g -f "bestaudio[ext=m4a]/bestaudio/best" "${url}"`);
+      const { stdout } = await execAsync(cmd, { timeout: 30000 });
+      const streamUrl = stdout.trim();
 
       if (!streamUrl) {
         return res.status(404).json({ error: 'Could not extract stream URL' });
       }
 
+      // Get metadata
+      const infoCmd = buildYtdlpCommand(`-j --skip-download "${url}"`);
+      const { stdout: infoStdout } = await execAsync(infoCmd, { timeout: 15000 });
+      const info = JSON.parse(infoStdout);
+
       res.json({
-        id: result.videoId || videoId,
-        title: result.title || 'Unknown',
-        artist: { name: result.author || 'Unknown Artist' },
-        duration: result.lengthSeconds || 0,
+        id: info.id,
+        title: info.title || 'Unknown',
+        artist: { name: info.uploader || 'Unknown Artist' },
+        duration: info.duration || 0,
         stream_url: streamUrl,
         url: url,
-        thumbnail: result.videoThumbnails ?
-          result.videoThumbnails.find(t => t.quality === 'medium')?.url ||
-          result.videoThumbnails[0]?.url || '' : '',
+        thumbnail: info.thumbnail || '',
         source: 'youtube'
       });
 
-    } catch (apiError) {
-      console.error('[EXTRACT] Invidious API error:', apiError.message);
+    } catch (execError) {
+      console.error('[EXTRACT] yt-dlp error:', execError.message);
       res.status(500).json({
         error: 'Extraction failed',
-        message: apiError.message
+        message: execError.message
       });
     }
 
@@ -312,7 +274,8 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`🎵 YouTube Music Wrapper running on port ${PORT}`);
-  console.log(`📺 Using youtube-dl-exec with yt-dlp`);
+  console.log(`📺 Using yt-dlp with cookies to bypass bot detection`);
+  console.log(`🍪 Cookies file: ${hasCookies ? 'YES' : 'NO'}`);
   console.log('');
   console.log('Endpoints:');
   console.log('  GET /                    - Health check');

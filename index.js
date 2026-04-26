@@ -152,6 +152,8 @@ app.get('/track/:id', async (req, res) => {
       // Get best audio format URL using yt-dlp with cookies
       // -g: get URL, -f: format selector (best audio only)
       const cmd = buildYtdlpCommand(`-g -f "bestaudio[ext=m4a]/bestaudio/best" "${videoUrl}"`);
+      console.log(`[TRACK] Executing: ${cmd.replace(/cookies ".*?"/, 'cookies "***"')}`);
+      console.log(`[TRACK] Cookies available: ${hasCookies}`);
 
       const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
 
@@ -160,6 +162,7 @@ app.get('/track/:id', async (req, res) => {
       }
 
       const streamUrl = stdout.trim();
+      console.log(`[TRACK] Stream URL extracted: ${streamUrl ? 'YES' : 'NO'}`);
 
       if (!streamUrl) {
         return res.status(404).json({ error: 'Could not extract stream URL' });
@@ -199,18 +202,20 @@ app.get('/track/:id', async (req, res) => {
 
     } catch (execError) {
       console.error('[TRACK] yt-dlp error:', execError.message);
+      console.error('[TRACK] Full error:', execError.stderr || 'No stderr');
 
       // Check for specific errors
       if (execError.message.includes('Video unavailable')) {
         return res.status(404).json({ error: 'Video unavailable or private' });
       }
-      if (execError.message.includes('Sign in')) {
-        return res.status(403).json({ error: 'Age restricted - requires sign in' });
+      if (execError.message.includes('Sign in') || execError.message.includes('confirm you')) {
+        return res.status(403).json({ error: 'Bot detection - cookies may be expired or invalid' });
       }
 
       res.status(500).json({
         error: 'Extraction failed',
-        message: execError.message
+        message: execError.message,
+        stderr: execError.stderr
       });
     }
 

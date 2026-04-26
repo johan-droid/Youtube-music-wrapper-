@@ -1,8 +1,16 @@
 # YouTube Music Wrapper
 
-A lightweight microservice that extracts audio URLs from YouTube Music/YouTube using yt-dlp.
+A lightweight microservice that extracts audio URLs from YouTube Music/YouTube using the **Invidious API**.
 
-**Purpose:** Bypass Heroku IP blocks by running extraction on Render (different IP range).
+**Purpose:** Bypass YouTube bot detection by using Invidious instances (YouTube frontends) instead of direct yt-dlp.
+
+## How It Works
+
+Instead of using yt-dlp (which gets blocked by YouTube), this wrapper uses public Invidious instances:
+- Invidious is a privacy-friendly YouTube frontend
+- Provides JSON API for search and video info
+- Returns direct audio stream URLs
+- Bypasses YouTube's bot detection entirely
 
 ## Deploy to Render
 
@@ -15,7 +23,7 @@ A lightweight microservice that extracts audio URLs from YouTube Music/YouTube u
 5. Configure:
    - **Name:** `youtube-music-wrapper`
    - **Environment:** `Node`
-   - **Build Command:** `npm install && pip install -r requirements.txt`
+   - **Build Command:** `npm install`
    - **Start Command:** `npm start`
    - **Plan:** Free
 6. Click "Create Web Service"
@@ -134,18 +142,32 @@ curl "http://localhost:3000/track/dQw4w9WgXcQ"
 
 ## Troubleshooting
 
-**yt-dlp not found:**
-- Make sure `pip install -r requirements.txt` runs during build
-- Or install yt-dlp manually: `pip install yt-dlp`
-
-**Rate limiting (429):**
-- YouTube may rate-limit Render IPs too
-- Consider adding delays between requests in your bot
-- Use rotating user-agents (already implemented)
+**Invidious instance down:**
+- The wrapper automatically rotates through multiple Invidious instances
+- If all fail, the service will return 500 - try again later
 
 **Video unavailable:**
-- Some videos are geo-blocked or age-restricted
+- Some videos are geo-blocked or age-restricted on Invidious too
 - Try different search queries
+
+**No audio URL in response:**
+- Some Invidious instances don't provide adaptiveFormats
+- The wrapper will return `null` for stream_url in these cases
+
+## How Invidious Works
+
+This service uses the Invidious API:
+```
+Your Bot → This Wrapper → Invidious Instance → YouTube
+                              (bypasses blocks)
+```
+
+Multiple Invidious instances are used for redundancy:
+- iv.datura.network
+- iv.nboeck.de
+- iv.melmac.space
+- y.com.sb
+- yt.artemislena.eu
 
 ## License
 

@@ -15,18 +15,35 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// yt-dlp options for youtube-dl-exec
+// yt-dlp options for youtube-dl-exec - includes anti-bot measures
 const YTDLP_OPTIONS = {
   noWarnings: true,
   noCallHome: true,
   preferFreeFormats: true,
   youtubeSkipDashManifest: true,
   referer: 'https://www.youtube.com/',
+  // Bypass bot detection with additional headers
   addHeader: [
-    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept-Language: en-US,en;q=0.9',
-    'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-  ]
+    'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Encoding: gzip, deflate, br',
+    'DNT: 1',
+    'Connection: keep-alive',
+    'Upgrade-Insecure-Requests: 1',
+    'Sec-Fetch-Dest: document',
+    'Sec-Fetch-Mode: navigate',
+    'Sec-Fetch-Site: none',
+    'Sec-Fetch-User: ?1',
+    'Cache-Control: max-age=0'
+  ],
+  // Use web client to avoid bot detection
+  extractorArgs: {
+    youtube: {
+      playerClient: 'web',
+      playerSkip: 'webpage,configs,js'
+    }
+  }
 };
 
 /**
@@ -55,30 +72,52 @@ app.get('/search', async (req, res) => {
 
     console.log(`[SEARCH] Query: "${query}", Limit: ${limit}`);
 
-    // Use youtube-dl-exec to search
+    // Use youtube-dl-exec to search and extract audio URLs
     const searchQuery = `ytsearch${limit}:${query}`;
 
     try {
+      // Search and extract info with format details
       const result = await youtubedl(searchQuery, {
         ...YTDLP_OPTIONS,
-        flatPlaylist: true,
-        dumpSingleJson: true
+        dumpSingleJson: true,
+        format: 'bestaudio[ext=m4a]/bestaudio/best',
+        // Don't skip processing to get actual URLs
+        noFlatPlaylist: true
       });
 
       const results = [];
       const entries = result.entries || [];
 
       for (const entry of entries) {
-        if (entry.id && entry.title) {
-          results.push({
-            id: entry.id,
-            title: entry.title,
-            artist: entry.uploader || entry.channel || 'Unknown Artist',
-            duration: entry.duration || 0,
-            thumbnail: entry.thumbnail || `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
-            url: `https://www.youtube.com/watch?v=${entry.id}`
-          });
+        if (!entry.id || !entry.title) continue;
+
+        // Extract stream URL from formats
+        let streamUrl = null;
+        if (entry.url) {
+          streamUrl = entry.url;
+        } else if (entry.formats && entry.formats.length > 0) {
+          // Find best audio format
+          const audioFormats = entry.formats.filter(f =>
+            f.acodec !== 'none' && (f.vcodec === 'none' || !f.vcodec)
+          );
+          if (audioFormats.length > 0) {
+            // Sort by bitrate (highest first)
+            audioFormats.sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
+            streamUrl = audioFormats[0].url;
+          } else if (entry.formats.length > 0) {
+            streamUrl = entry.formats[0].url;
+          }
         }
+
+        results.push({
+          id: entry.id,
+          title: entry.title,
+          artist: entry.uploader || entry.channel || 'Unknown Artist',
+          duration: entry.duration || 0,
+          thumbnail: entry.thumbnail || `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
+          url: `https://www.youtube.com/watch?v=${entry.id}`,
+          stream_url: streamUrl  // Include stream URL directly
+        });
       }
 
       console.log(`[SEARCH] Found ${results.length} results`);

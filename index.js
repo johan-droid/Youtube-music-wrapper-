@@ -6,11 +6,8 @@
 
 const express = require('express');
 const cors = require('cors');
-const { exec } = require('child_process');
-const { promisify } = require('util');
-const path = require('path');
+const youtubedl = require('youtube-dl-exec');
 
-const execAsync = promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -18,8 +15,19 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// yt-dlp binary path (will be installed via requirements.txt or npm postinstall)
-const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
+// yt-dlp options for youtube-dl-exec
+const YTDLP_OPTIONS = {
+  noWarnings: true,
+  noCallHome: true,
+  preferFreeFormats: true,
+  youtubeSkipDashManifest: true,
+  referer: 'https://www.youtube.com/',
+  addHeader: [
+    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept-Language: en-US,en;q=0.9',
+    'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+  ]
+};
 
 /**
  * Health check endpoint
@@ -47,45 +55,49 @@ app.get('/search', async (req, res) => {
 
     console.log(`[SEARCH] Query: "${query}", Limit: ${limit}`);
 
-    // Use yt-dlp to search
+    // Use youtube-dl-exec to search
     const searchQuery = `ytsearch${limit}:${query}`;
-    const cmd = `${YTDLP_PATH} -j --flat-playlist --extractor-args "youtube:lang=en" "${searchQuery}"`;
 
-    const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
+    try {
+      const result = await youtubedl(searchQuery, {
+        ...YTDLP_OPTIONS,
+        flatPlaylist: true,
+        dumpSingleJson: true
+      });
 
-    if (stderr) {
-      console.error('[SEARCH] stderr:', stderr);
-    }
+      const results = [];
+      const entries = result.entries || [];
 
-    // Parse JSON lines
-    const lines = stdout.trim().split('\n').filter(line => line.trim());
-    const results = [];
-
-    for (const line of lines) {
-      try {
-        const data = JSON.parse(line);
-        if (data.id && data.title) {
+      for (const entry of entries) {
+        if (entry.id && entry.title) {
           results.push({
-            id: data.id,
-            title: data.title,
-            artist: data.uploader || data.channel || 'Unknown Artist',
-            duration: data.duration || 0,
-            thumbnail: data.thumbnail || `https://i.ytimg.com/vi/${data.id}/mqdefault.jpg`,
-            url: `https://www.youtube.com/watch?v=${data.id}`
+            id: entry.id,
+            title: entry.title,
+            artist: entry.uploader || entry.channel || 'Unknown Artist',
+            duration: entry.duration || 0,
+            thumbnail: entry.thumbnail || `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
+            url: `https://www.youtube.com/watch?v=${entry.id}`
           });
         }
-      } catch (e) {
-        console.error('[SEARCH] Failed to parse line:', e.message);
       }
+
+      console.log(`[SEARCH] Found ${results.length} results`);
+
+      res.json({
+        data: results,
+        total: results.length,
+        query: query
+      });
+
+    } catch (execError) {
+      console.error('[SEARCH] yt-dlp error:', execError.message);
+      res.status(500).json({
+        error: 'Search failed',
+        message: execError.message,
+        data: [],
+        total: 0
+      });
     }
-
-    console.log(`[SEARCH] Found ${results.length} results`);
-
-    res.json({
-      data: results,
-      total: results.length,
-      query: query
-    });
 
   } catch (error) {
     console.error('[SEARCH] Error:', error.message);
@@ -114,53 +126,58 @@ app.get('/track/:id', async (req, res) => {
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // Get best audio format URL
-    // -g: get URL, -f: format selector (best audio only)
-    const cmd = `${YTDLP_PATH} -g -f "bestaudio[ext=m4a]/bestaudio/best" --extractor-args "youtube:player_client=web" "${videoUrl}"`;
-
-    const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
-
-    if (stderr) {
-      console.error('[TRACK] stderr:', stderr);
-    }
-
-    const streamUrl = stdout.trim();
-
-    if (!streamUrl) {
-      return res.status(404).json({ error: 'Could not extract stream URL' });
-    }
-
-    // Get video info for metadata
-    const infoCmd = `${YTDLP_PATH} -j --skip-download "${videoUrl}"`;
-    let title = 'Unknown';
-    let artist = 'Unknown Artist';
-    let duration = 0;
-    let thumbnail = '';
-
     try {
-      const { stdout: infoStdout } = await execAsync(infoCmd, { timeout: 15000 });
-      const info = JSON.parse(infoStdout);
-      title = info.title || 'Unknown';
-      artist = info.uploader || info.channel || 'Unknown Artist';
-      duration = info.duration || 0;
-      thumbnail = info.thumbnail || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
-    } catch (e) {
-      console.error('[TRACK] Failed to get metadata:', e.message);
-      thumbnail = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+      // Get video info with audio URL
+      const result = await youtubedl(videoUrl, {
+        ...YTDLP_OPTIONS,
+        dumpSingleJson: true,
+        format: 'bestaudio[ext=m4a]/bestaudio/best'
+      });
+
+      const title = result.title || 'Unknown';
+      const artist = result.uploader || result.channel || 'Unknown Artist';
+      const duration = result.duration || 0;
+      const thumbnail = result.thumbnail || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+
+      // Get the audio URL
+      let streamUrl = null;
+      if (result.url) {
+        streamUrl = result.url;
+      } else if (result.formats && result.formats.length > 0) {
+        // Find best audio format
+        const audioFormats = result.formats.filter(f => f.acodec !== 'none' && f.vcodec === 'none');
+        if (audioFormats.length > 0) {
+          audioFormats.sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
+          streamUrl = audioFormats[0].url;
+        } else if (result.formats.length > 0) {
+          streamUrl = result.formats[0].url;
+        }
+      }
+
+      if (!streamUrl) {
+        return res.status(404).json({ error: 'Could not extract stream URL' });
+      }
+
+      console.log(`[TRACK] Success: ${title}`);
+
+      res.json({
+        id: videoId,
+        title: title,
+        artist: { name: artist },
+        duration: duration,
+        stream_url: streamUrl,
+        url: videoUrl,
+        thumbnail: thumbnail,
+        source: 'youtube'
+      });
+
+    } catch (execError) {
+      console.error('[TRACK] yt-dlp error:', execError.message);
+      res.status(500).json({
+        error: 'Extraction failed',
+        message: execError.message
+      });
     }
-
-    console.log(`[TRACK] Success: ${title}`);
-
-    res.json({
-      id: videoId,
-      title: title,
-      artist: { name: artist },
-      duration: duration,
-      stream_url: streamUrl,
-      url: videoUrl,
-      thumbnail: thumbnail,
-      source: 'youtube'
-    });
 
   } catch (error) {
     console.error('[TRACK] Error:', error.message);
@@ -194,30 +211,50 @@ app.get('/extract', async (req, res) => {
 
     console.log(`[EXTRACT] URL: ${url}`);
 
-    // Get stream URL
-    const cmd = `${YTDLP_PATH} -g -f "bestaudio[ext=m4a]/bestaudio/best" "${url}"`;
-    const { stdout } = await execAsync(cmd, { timeout: 30000 });
-    const streamUrl = stdout.trim();
+    try {
+      // Get video info with audio URL
+      const result = await youtubedl(url, {
+        ...YTDLP_OPTIONS,
+        dumpSingleJson: true,
+        format: 'bestaudio[ext=m4a]/bestaudio/best'
+      });
 
-    if (!streamUrl) {
-      return res.status(404).json({ error: 'Could not extract stream URL' });
+      // Get the audio URL
+      let streamUrl = null;
+      if (result.url) {
+        streamUrl = result.url;
+      } else if (result.formats && result.formats.length > 0) {
+        const audioFormats = result.formats.filter(f => f.acodec !== 'none' && f.vcodec === 'none');
+        if (audioFormats.length > 0) {
+          audioFormats.sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
+          streamUrl = audioFormats[0].url;
+        } else if (result.formats.length > 0) {
+          streamUrl = result.formats[0].url;
+        }
+      }
+
+      if (!streamUrl) {
+        return res.status(404).json({ error: 'Could not extract stream URL' });
+      }
+
+      res.json({
+        id: result.id,
+        title: result.title || 'Unknown',
+        artist: { name: result.uploader || 'Unknown Artist' },
+        duration: result.duration || 0,
+        stream_url: streamUrl,
+        url: url,
+        thumbnail: result.thumbnail || '',
+        source: 'youtube'
+      });
+
+    } catch (execError) {
+      console.error('[EXTRACT] yt-dlp error:', execError.message);
+      res.status(500).json({
+        error: 'Extraction failed',
+        message: execError.message
+      });
     }
-
-    // Get metadata
-    const infoCmd = `${YTDLP_PATH} -j --skip-download "${url}"`;
-    const { stdout: infoStdout } = await execAsync(infoCmd, { timeout: 15000 });
-    const info = JSON.parse(infoStdout);
-
-    res.json({
-      id: info.id,
-      title: info.title || 'Unknown',
-      artist: { name: info.uploader || 'Unknown Artist' },
-      duration: info.duration || 0,
-      stream_url: streamUrl,
-      url: url,
-      thumbnail: info.thumbnail || '',
-      source: 'youtube'
-    });
 
   } catch (error) {
     console.error('[EXTRACT] Error:', error.message);
@@ -236,7 +273,7 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`🎵 YouTube Music Wrapper running on port ${PORT}`);
-  console.log(`📺 yt-dlp path: ${YTDLP_PATH}`);
+  console.log(`📺 Using youtube-dl-exec with yt-dlp`);
   console.log('');
   console.log('Endpoints:');
   console.log('  GET /                    - Health check');

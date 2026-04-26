@@ -25,18 +25,24 @@ const COOKIES_ENV = process.env.YOUTUBE_COOKIES;
 const hasCookiesFile = fs.existsSync(COOKIES_PATH);
 const hasCookiesEnv = !!COOKIES_ENV;
 
-// If cookies provided via env, write to file
-if (hasCookiesEnv && !hasCookiesFile) {
+console.log(`[INIT] Environment check: COOKIES_ENV present=${hasCookiesEnv}, length=${COOKIES_ENV ? COOKIES_ENV.length : 0}`);
+console.log(`[INIT] Cookies file exists: ${hasCookiesFile}`);
+
+// Always update cookies from env if provided (allows cookie refresh)
+if (hasCookiesEnv) {
   try {
     fs.writeFileSync(COOKIES_PATH, COOKIES_ENV);
     console.log('[INIT] Cookies written from environment variable');
+    // Verify write
+    const written = fs.readFileSync(COOKIES_PATH, 'utf8');
+    console.log(`[INIT] Cookies file verified: ${written.length} bytes, starts with: ${written.substring(0, 50)}...`);
   } catch (e) {
     console.error('[INIT] Failed to write cookies:', e.message);
   }
 }
 
-const hasCookies = fs.existsSync(COOKIES_PATH);
-console.log(`[INIT] Cookies file ${hasCookies ? 'found' : 'NOT found'} at ${COOKIES_PATH}`);
+const hasCookies = fs.existsSync(COOKIES_PATH) && fs.statSync(COOKIES_PATH).size > 0;
+console.log(`[INIT] Final cookies status: ${hasCookies ? 'AVAILABLE' : 'NOT AVAILABLE'}`);
 
 // Build yt-dlp command with cookies
 function buildYtdlpCommand(args) {

@@ -19,8 +19,22 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Check for cookies file
+// Check for cookies file or environment variable
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+const COOKIES_ENV = process.env.YOUTUBE_COOKIES;
+const hasCookiesFile = fs.existsSync(COOKIES_PATH);
+const hasCookiesEnv = !!COOKIES_ENV;
+
+// If cookies provided via env, write to file
+if (hasCookiesEnv && !hasCookiesFile) {
+  try {
+    fs.writeFileSync(COOKIES_PATH, COOKIES_ENV);
+    console.log('[INIT] Cookies written from environment variable');
+  } catch (e) {
+    console.error('[INIT] Failed to write cookies:', e.message);
+  }
+}
+
 const hasCookies = fs.existsSync(COOKIES_PATH);
 console.log(`[INIT] Cookies file ${hasCookies ? 'found' : 'NOT found'} at ${COOKIES_PATH}`);
 

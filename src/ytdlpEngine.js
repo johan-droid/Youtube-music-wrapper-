@@ -18,11 +18,14 @@ class YtdlpEngine {
         const args = this.getBaseArgs().concat([
             `ytsearch${limit}:${query}`,
             '--dump-json',
-            '--flat-playlist'
+            '--flat-playlist',
+            '--no-check-certificates',
+            '--prefer-free-formats'
         ]);
 
         try {
-            const { stdout } = await execFilePromise('yt-dlp', args, { timeout: 40000 });
+            // Increased timeout for Render cold starts
+            const { stdout } = await execFilePromise('yt-dlp', args, { timeout: 150000 });
             const lines = stdout.split('\n').filter(line => line.trim().length > 0);
             return lines.map(line => {
                 const data = JSON.parse(line);
@@ -41,34 +44,29 @@ class YtdlpEngine {
     }
 
     async extract(url, videoId) {
-        const streamArgs = this.getBaseArgs().concat([
-            '-g',
-            '-f',
-            'bestaudio[ext=m4a]/bestaudio/best',
-            url
-        ]);
-
-        const metadataArgs = this.getBaseArgs().concat([
+        // Optimization: Use a single call to get both metadata and stream URL
+        // -j (dump-json) includes the direct stream URL in the 'url' field
+        const args = this.getBaseArgs().concat([
             '-j',
             '--skip-download',
+            '-f', 'bestaudio[ext=m4a]/bestaudio/best',
+            '--no-playlist',
+            '--no-check-certificates',
+            '--prefer-free-formats',
             url
         ]);
 
         try {
-             const [streamUrlResult, metadataResult] = await Promise.all([
-                execFilePromise('yt-dlp', streamArgs, { timeout: 45000 }),
-                execFilePromise('yt-dlp', metadataArgs, { timeout: 45000 })
-            ]);
-
-            const stream_url = streamUrlResult.stdout.trim();
-            const data = JSON.parse(metadataResult.stdout);
+            // Increased timeout for Render cold starts
+            const { stdout } = await execFilePromise('yt-dlp', args, { timeout: 150000 });
+            const data = JSON.parse(stdout);
 
             return {
                 id: videoId || data.id,
                 title: data.title,
                 artist: { name: data.uploader },
                 duration: data.duration,
-                stream_url: stream_url,
+                stream_url: data.url, // This is the direct stream URL
                 url: data.webpage_url || url,
                 thumbnail: data.thumbnail,
                 source: "youtube"

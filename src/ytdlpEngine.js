@@ -24,7 +24,6 @@ class YtdlpEngine {
         ]);
 
         try {
-            // Increased timeout for Render cold starts
             const { stdout } = await execFilePromise('yt-dlp', args, { timeout: 150000 });
             const lines = stdout.split('\n').filter(line => line.trim().length > 0);
             return lines.map(line => {
@@ -45,7 +44,7 @@ class YtdlpEngine {
 
     async extract(url, videoId) {
         // Optimization: Use a single call to get both metadata and stream URL
-        // -j (dump-json) includes the direct stream URL in the 'url' field
+        // -j (dump-json) includes the direct stream URL in the 'url' field for simple extractions
         const args = this.getBaseArgs().concat([
             '-j',
             '--skip-download',
@@ -57,7 +56,6 @@ class YtdlpEngine {
         ]);
 
         try {
-            // Increased timeout for Render cold starts
             const { stdout } = await execFilePromise('yt-dlp', args, { timeout: 150000 });
             const data = JSON.parse(stdout);
 
